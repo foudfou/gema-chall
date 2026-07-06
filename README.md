@@ -1,69 +1,73 @@
-# GEMA Music Usage Data Pipeline
+# GEMA Musik-Nutzungsdaten-Pipeline
 
-A data processing pipeline for radio station play logs.
+Eine Datenverarbeitungs-Pipeline für Radiosender-Abspiellogs.
 
-## Usage
+## Verwendung
 
 ```bash
-# Install dependencies
+# Dependencies installieren
 uv sync --all-extras
 
-# Run pipeline
+# Pipeline ausführen
 uv run python main.py data/sample.csv
-# Check results
+# Ergebnisse prüfen
 sqlite3 data/play_events.db .dump
 
-# Run tests
+# Tests ausführen
 uv run pytest -v
 ```
 
-## Implementation
+## Implementierung
 
-The intent of current implementation is to demonstrate modular code
-(`pipeline/`) used from a CLI (`main.py`). The current processor
-(`pipeline/processor.py`) is meant *as an illustration*: synchronous et
-sequential.
+Die aktuelle Implementierung soll modularen Code (`pipeline/`) demonstrieren,
+der von einer CLI (`main.py`) verwendet wird. Der aktuelle Processor
+(`pipeline/processor.py`) ist *als Illustration* gedacht: synchron und
+sequentiell.
 
-Simplifications include:
+Vereinfachungen umfassen:
 
-| Current implementation              | Production                                                |
-|-------------------------------------|-----------------------------------------------------------|
-| CSV files provided via CLI argument | Watch directory, S3 trigger, or API upload                |
-| Mocked Work-Catalog-API             | HTTP client or lookup on existing database table / cache  |
-| SQLite for simplicity               | PostgreSQL, Data Warehouse                                |
-| Single-process execution            | Concurrency or task queue (Celery) for horizontal scaling |
+| Aktuelle Implementierung              | Production                                                     |
+|---------------------------------------|----------------------------------------------------------------|
+| CSV-Dateien über CLI-Argument         | Watch Directory, S3 Trigger, oder API Upload                   |
+| Gemockte Work-Catalog-API             | HTTP Client oder Lookup auf bestehender Datenbanktabelle/Cache |
+| SQLite der Einfachheit halber         | PostgreSQL, Data Warehouse                                     |
+| Single-Process-Ausführung             | Concurrency oder Task Queue (Celery) für horizontale Skalierung |
 
-A distributed system (workers orchestrated around a queue system) might not be
-the best answer since the pipeline is quite linear and resilience is best
-handled by data processing platforms. A real-world production deployment
-probably uses batch jobs scheduled onto a data processing infrastructure,
-something like **Airflow + Spark**.
+Ein verteiltes System (Worker orchestriert um ein Queue-System) ist
+möglicherweise nicht die beste Lösung, da die Pipeline recht linear ist und
+Resilience am besten von Datenverarbeitungsplattformen gehandhabt wird. Ein
+realer Production-Einsatz verwendet wahrscheinlich Batch Jobs, die auf einer
+Datenverarbeitungsinfrastruktur scheduled werden, etwa **Airflow + Spark**.
 
-Considerations:
+Überlegungen:
 
-- **Efficiency**:
-  - Chunked reading (implemented): Files are read in configurable chunks
-    (default 10k rows) to bound memory usage for 100MB+ files
-  - Batch DB writes: Processed records are inserted in batches via
-    `pandas.to_sql()` rather than row-by-row
-  - Batch enrichment API: Instead of one API call per ISRC, batch multiple ISRCs per request
-  - Parallel processing (not implemented yet): Process multiple chunks
-    concurrently with `concurrent.futures` or Celery workers
-  - Connection pooling (not implemented yet): Use SQLAlchemy with connection
-    pooling for high-throughput DB access
-  - Async I/O (not implemented yet): Use `aiohttp` + `asyncpg` for non-blocking I/O
+- **Effizienz**:
+  - Chunked Reading (implementiert): Dateien werden in konfigurierbaren Chunks
+    gelesen (Default 10k Zeilen), um den Speicherverbrauch bei 100MB+ Dateien
+    zu begrenzen
+  - Batch DB Writes: Verarbeitete Records werden in Batches über
+    `pandas.to_sql()` eingefügt, anstatt Row-by-Row
+  - Batch Enrichment API: Anstatt eines API Calls pro ISRC werden mehrere ISRCs
+    pro Request gebündelt
+  - Parallel Processing (noch nicht implementiert): Mehrere Chunks gleichzeitig
+    mit `concurrent.futures` oder Celery Workers verarbeiten
+  - Connection Pooling (noch nicht implementiert): SQLAlchemy mit Connection
+    Pooling für High-Throughput DB Access verwenden
+  - Async I/O (noch nicht implementiert): `aiohttp` + `asyncpg` für
+    Non-Blocking I/O verwenden
 
 - **Error Handling**
-  - Structured logging: Logs with full context can be shipped to
-    ELK/Datadog/etc. for alerting and analysis. On validation error, the
-    pipeline continues.
-  - Retry with backoff: Transient failures in enrichment API and DB writes are
-    retried with exponential backoff (`tenacity`). On a production system
-    failed retries would be published with full context to a Dead Letter Queue
-    for manual review or automated retry
+  - Structured Logging: Logs mit vollständigem Context können an
+    ELK/Datadog/etc. für Alerting und Analyse gesendet werden. Bei
+    Validation Errors läuft die Pipeline weiter.
+  - Retry mit Backoff: Transient Failures bei der Enrichment API und DB Writes
+    werden mit Exponential Backoff wiederholt (`tenacity`). In einem
+    Production-System würden fehlgeschlagene Retries mit vollständigem Context
+    in eine Dead Letter Queue publiziert, für manuelle Review oder
+    automatisierten Retry
 
-- **Idempotency**: we need to ingest each row exactly once. The current
-  implementation creates duplicates. We could use `timestamp + isrc_code +
-  station_id` as a reasonable key. Re-sent files and updates are a legitimate
-  use case (business decision). We could also track processed files to avoid
-  re-processing of re-sent files.
+- **Idempotency**: Jede Zeile muss genau einmal verarbeitet werden. Die aktuelle
+  Implementierung erzeugt Duplikate. `timestamp + isrc_code + station_id` wäre
+  ein sinnvoller Key. Erneut gesendete Dateien und Updates sind ein legitimer
+  Use Case (Business-Entscheidung). Verarbeitete Dateien könnten auch getrackt
+  werden, um Re-Processing von wiederholten Dateien zu vermeiden.
