@@ -21,3 +21,8 @@ gema-pipeline = "main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.20",
+]

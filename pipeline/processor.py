@@ -1,13 +1,11 @@
 """Core processing logic: validate, enrich, transform."""
 
-from typing import Iterator
-
 import pandas as pd
 import structlog
 from pydantic import ValidationError
 
 from pipeline.enrichment import WorkCatalogClient
-from pipeline.models import EnrichedPlayEvent, RawPlayEvent
+from pipeline.models import EnrichedPlayEvent, RawPlayEvent, WorkDetails
 
 log = structlog.get_logger()
 
@@ -18,15 +16,10 @@ class Processor:
     def __init__(self, catalog_client: WorkCatalogClient):
         self.catalog_client = catalog_client
 
-    def process_row(self, row: dict, row_index: int) -> EnrichedPlayEvent | None:
-        """
-        Process a single row: validate, enrich, transform.
-
-        Returns EnrichedPlayEvent on success, None on failure (logged).
-        """
-        # Validate
+    def validate_row(self, row: dict, row_index: int) -> RawPlayEvent | None:
+        """Validate a single row. Returns RawPlayEvent or None if invalid."""
         try:
-            raw_event = RawPlayEvent(**row)
+            return RawPlayEvent(**row)
         except ValidationError as e:
             log.error(
                 "validation_failed",
@@ -36,36 +29,59 @@ class Processor:
             )
             return None
 
-        # Enrich
-        try:
-            work_details = self.catalog_client.get_work_details(raw_event.isrc_code)
-        except Exception as e:
-            log.error(
-                "enrichment_failed",
-                row_index=row_index,
-                isrc_code=raw_event.isrc_code,
-                error=str(e),
-            )
-            return None
-
-        # Transform
-        listened_seconds = raw_event.duration_seconds * raw_event.listener_count
-
+    def transform(
+        self, event: RawPlayEvent, work_details: WorkDetails
+    ) -> EnrichedPlayEvent:
+        """Transform a validated event with work details into enriched event."""
         return EnrichedPlayEvent(
-            timestamp=raw_event.timestamp,
-            isrc_code=raw_event.isrc_code,
-            station_id=raw_event.station_id,
-            duration_seconds=raw_event.duration_seconds,
-            listener_count=raw_event.listener_count,
+            timestamp=event.timestamp,
+            isrc_code=event.isrc_code,
+            station_id=event.station_id,
+            duration_seconds=event.duration_seconds,
+            listener_count=event.listener_count,
             artist=work_details.artist,
             title=work_details.title,
             rights_holder=work_details.rights_holder,
-            listened_seconds=listened_seconds,
+            listened_seconds=event.duration_seconds * event.listener_count,
         )
 
-    def process_dataframe(self, df: pd.DataFrame) -> Iterator[EnrichedPlayEvent]:
-        """Process a DataFrame chunk, yielding enriched events."""
+    def process_dataframe(self, df: pd.DataFrame) -> list[EnrichedPlayEvent]:
+        """
+        Process a DataFrame chunk.
+
+        1. Validate all rows
+        2. Batch enrich (one API call for all unique ISRCs)
+        3. Transform each valid event
+        """
+        # Validate
+        validated: list[tuple[int, RawPlayEvent]] = []
         for row_num, (_, row) in enumerate(df.iterrows()):
-            result = self.process_row(row.to_dict(), row_num)
-            if result is not None:
-                yield result
+            event = self.validate_row(row.to_dict(), row_num)
+            if event is not None:
+                validated.append((row_num, event))
+
+        if not validated:
+            return []
+
+        # Batch enrich
+        unique_isrcs = list({event.isrc_code for _, event in validated})
+        try:
+            work_details_map = self.catalog_client.get_work_details_batch(unique_isrcs)
+        except Exception as e:
+            log.error("batch_enrichment_failed", error=str(e), isrc_count=len(unique_isrcs))
+            return []
+
+        # Transform
+        results: list[EnrichedPlayEvent] = []
+        for row_num, event in validated:
+            work_details = work_details_map.get(event.isrc_code)
+            if work_details is None:
+                log.error(
+                    "enrichment_missing",
+                    row_index=row_num,
+                    isrc_code=event.isrc_code,
+                )
+                continue
+            results.append(self.transform(event, work_details))
+
+        return results
